@@ -4,15 +4,20 @@ import {
   AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
+  ChannelType,
   Client,
   ContainerBuilder,
   Events,
   GatewayIntentBits,
   MediaGalleryBuilder,
   MessageFlags,
+  ModalBuilder,
+  PermissionFlagsBits,
   SeparatorBuilder,
   SeparatorSpacingSize,
   TextDisplayBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } from 'discord.js';
 import pg from 'pg';
 
@@ -48,8 +53,17 @@ function footerGallery() {
 const CONFIG = Object.freeze({
   verificationChannelId: '1534248667211370668',
   supportChannelId: '1534248939707039919',
-  staffLogsChannelId: '1534269523430215751',
+  staffLogsChannelId: '1535149893067472947',
   communityMemberRoleId: '1534240825993723914',
+
+  // Paradise Support / Tickets
+  generalSupportCategoryId: '1534249036566233108',
+  managementSupportCategoryId: '1534249087505793144',
+  ownershipSupportCategoryId: '1534249131449647297',
+
+  staffTeamRoleId: '1534056090306613268',
+  managementTeamRoleId: '1534055500897845288',
+  ownershipTeamRoleId: '1534054855537070272',
 
   dockApiBaseUrl: 'https://api.docksys.xyz',
   dockApiKey: process.env.DOCK_API_KEY?.trim(),
@@ -77,6 +91,8 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
   ],
 });
 
@@ -117,7 +133,24 @@ async function initializeDatabase() {
     )
   `);
 
-  console.log('[database] Verification tables are ready.');
+  await database.query(`
+    CREATE TABLE IF NOT EXISTS paradise_tickets (
+      ticket_number BIGSERIAL PRIMARY KEY,
+      channel_id TEXT UNIQUE,
+      owner_id TEXT NOT NULL,
+      ticket_type TEXT NOT NULL,
+      subject TEXT,
+      reason TEXT,
+      claimed_by TEXT,
+      status TEXT NOT NULL DEFAULT 'open',
+      opened_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      closed_at TIMESTAMPTZ,
+      closed_by TEXT,
+      close_reason TEXT
+    )
+  `);
+
+  console.log('[database] Verification and ticket tables are ready.');
 }
 
 async function recordVerificationHistory({
@@ -196,6 +229,21 @@ const IDS = Object.freeze({
   check: 'pr_verify_check',
   reverify: 'pr_verify_reverify',
   completePrefix: 'pr_verify_complete:',
+
+  ticketGeneral: 'pr_ticket_general',
+  ticketManagement: 'pr_ticket_management',
+  ticketOwnership: 'pr_ticket_ownership',
+  ticketCreatePrefix: 'pr_ticket_create:',
+  ticketClaim: 'pr_ticket_claim',
+  ticketClose: 'pr_ticket_close',
+  ticketStaffPanel: 'pr_ticket_staff_panel',
+  ticketEscalate: 'pr_ticket_escalate',
+  ticketDeescalate: 'pr_ticket_deescalate',
+  ticketAddUser: 'pr_ticket_add_user',
+  ticketRemoveUser: 'pr_ticket_remove_user',
+  ticketCloseModal: 'pr_ticket_close_modal',
+  ticketAddUserModal: 'pr_ticket_add_user_modal',
+  ticketRemoveUserModal: 'pr_ticket_remove_user_modal',
 });
 
 function text(content) {
@@ -840,6 +888,1099 @@ async function handleVerificationError(interaction, error) {
   }
 }
 
+
+// =============================================================================
+// Paradise Roleplay • Support / Ticket System
+// =============================================================================
+
+const TICKET_TYPES = Object.freeze({
+  general: {
+    label: 'General Support',
+    categoryId: CONFIG.generalSupportCategoryId,
+    pingRoleId: CONFIG.staffTeamRoleId,
+    accessRoleIds: [
+      CONFIG.staffTeamRoleId,
+      CONFIG.managementTeamRoleId,
+      CONFIG.ownershipTeamRoleId,
+    ],
+  },
+  management: {
+    label: 'Management Support',
+    categoryId: CONFIG.managementSupportCategoryId,
+    pingRoleId: CONFIG.managementTeamRoleId,
+    accessRoleIds: [
+      CONFIG.managementTeamRoleId,
+      CONFIG.ownershipTeamRoleId,
+    ],
+  },
+  ownership: {
+    label: 'Ownership Support',
+    categoryId: CONFIG.ownershipSupportCategoryId,
+    pingRoleId: CONFIG.ownershipTeamRoleId,
+    accessRoleIds: [
+      CONFIG.ownershipTeamRoleId,
+    ],
+  },
+});
+
+const ticketCreationLocks = new Set();
+
+function ticketTypeFromPanelButton(customId) {
+  if (customId === IDS.ticketGeneral) return 'general';
+  if (customId === IDS.ticketManagement) return 'management';
+  if (customId === IDS.ticketOwnership) return 'ownership';
+  return null;
+}
+
+function ticketCategoryIds() {
+  return Object.values(TICKET_TYPES).map(type => type.categoryId);
+}
+
+function isTicketChannel(channel) {
+  return Boolean(
+    channel?.type === ChannelType.GuildText &&
+    ticketCategoryIds().includes(channel.parentId) &&
+    channel.topic?.startsWith('PRT|'),
+  );
+}
+
+function parseTicketMeta(channel) {
+  if (!isTicketChannel(channel)) return null;
+
+  const values = {};
+  for (const piece of channel.topic.split('|').slice(1)) {
+    const [key, ...rest] = piece.split('=');
+    values[key] = rest.join('=');
+  }
+
+  return {
+    number: Number.parseInt(values.n ?? '0', 10) || 0,
+    ownerId: values.o ?? null,
+    type: values.t ?? 'general',
+    claimedBy: values.c && values.c !== '0' ? values.c : null,
+  };
+}
+
+function buildTicketTopic(meta) {
+  return `PRT|n=${meta.number}|o=${meta.ownerId}|t=${meta.type}|c=${meta.claimedBy ?? 0}`;
+}
+
+function padTicketNumber(number) {
+  return String(number).padStart(4, '0');
+}
+
+function slug(value) {
+  return String(value ?? 'member')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 28) || 'member';
+}
+
+function ticketChannelName(type, number, username) {
+  return `${type}-${padTicketNumber(number)}-${slug(username)}`.slice(0, 100);
+}
+
+function memberHasAnyRole(member, roleIds) {
+  return Boolean(member?.roles?.cache && roleIds.some(roleId => member.roles.cache.has(roleId)));
+}
+
+function canAccessTicketAsStaff(member, type) {
+  const config = TICKET_TYPES[type] ?? TICKET_TYPES.general;
+  return memberHasAnyRole(member, config.accessRoleIds);
+}
+
+function isAnyParadiseStaff(member) {
+  return memberHasAnyRole(member, [
+    CONFIG.staffTeamRoleId,
+    CONFIG.managementTeamRoleId,
+    CONFIG.ownershipTeamRoleId,
+  ]);
+}
+
+function supportPanel() {
+  return makeContainer({
+    title: 'Paradise Roleplay Support',
+    body:
+      '**Welcome to Paradise Support.** Choose the support level that best matches your issue below.\n\n' +
+      '**General Support** — Questions, verification help, member assistance, and normal server concerns.\n' +
+      '**Management Support** — Staff concerns, appeals, higher-level server issues, or matters requiring Management.\n' +
+      '**Ownership Support** — Sensitive or serious matters that specifically require the Ownership Team.\n\n' +
+      '-# Please choose the lowest appropriate support level. You may only have one open support ticket at a time.',
+    buttons: [
+      new ButtonBuilder()
+        .setCustomId(IDS.ticketGeneral)
+        .setLabel('General Support')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(IDS.ticketManagement)
+        .setLabel('Management Support')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(IDS.ticketOwnership)
+        .setLabel('Ownership Support')
+        .setStyle(ButtonStyle.Secondary),
+    ],
+  });
+}
+
+function ticketOpeningContainer(meta, subject, reason) {
+  const typeConfig = TICKET_TYPES[meta.type] ?? TICKET_TYPES.general;
+
+  return makeContainer({
+    title: `${typeConfig.label} • #${padTicketNumber(meta.number)}`,
+    body:
+      `<@${meta.ownerId}> <@&${typeConfig.pingRoleId}>\n\n` +
+      `**Subject:** ${subject}\n` +
+      `**Details:** ${reason}\n` +
+      `**Status:** ${meta.claimedBy ? `Claimed by <@${meta.claimedBy}>` : 'Waiting for staff'}\n\n` +
+      'A Paradise staff member will assist you here. Please avoid repeatedly pinging staff while your ticket is waiting.',
+    buttons: [
+      new ButtonBuilder()
+        .setCustomId(IDS.ticketClaim)
+        .setLabel(meta.claimedBy ? 'Claimed' : 'Claim')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(IDS.ticketClose)
+        .setLabel('Close')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(IDS.ticketStaffPanel)
+        .setLabel('Staff Panel')
+        .setStyle(ButtonStyle.Secondary),
+    ],
+  });
+}
+
+function ticketStaffPanelContainer(meta) {
+  const typeIndex = ['general', 'management', 'ownership'].indexOf(meta.type);
+
+  return makeContainer({
+    title: `Ticket Staff Panel • #${padTicketNumber(meta.number)}`,
+    body:
+      `**Current level:** ${TICKET_TYPES[meta.type]?.label ?? meta.type}\n` +
+      `**Ticket owner:** <@${meta.ownerId}>\n` +
+      `**Claimed by:** ${meta.claimedBy ? `<@${meta.claimedBy}>` : 'Nobody'}\n\n` +
+      'Use these controls to manage access or move the ticket through the Paradise support chain.',
+    buttons: [
+      new ButtonBuilder()
+        .setCustomId(IDS.ticketEscalate)
+        .setLabel('Escalate')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(typeIndex >= 2),
+      new ButtonBuilder()
+        .setCustomId(IDS.ticketDeescalate)
+        .setLabel('De-escalate')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(typeIndex <= 0),
+      new ButtonBuilder()
+        .setCustomId(IDS.ticketAddUser)
+        .setLabel('Add User')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(IDS.ticketRemoveUser)
+        .setLabel('Remove User')
+        .setStyle(ButtonStyle.Secondary),
+    ],
+  });
+}
+
+function createTicketModal(type) {
+  const typeConfig = TICKET_TYPES[type];
+
+  const subject = new TextInputBuilder()
+    .setCustomId('subject')
+    .setLabel('What do you need help with?')
+    .setPlaceholder('Brief summary of your issue')
+    .setStyle(TextInputStyle.Short)
+    .setMinLength(3)
+    .setMaxLength(100)
+    .setRequired(true);
+
+  const reason = new TextInputBuilder()
+    .setCustomId('reason')
+    .setLabel('Please explain the issue')
+    .setPlaceholder('Give staff enough information to help you.')
+    .setStyle(TextInputStyle.Paragraph)
+    .setMinLength(10)
+    .setMaxLength(1000)
+    .setRequired(true);
+
+  return new ModalBuilder()
+    .setCustomId(`${IDS.ticketCreatePrefix}${type}`)
+    .setTitle(typeConfig?.label ?? 'Paradise Support')
+    .addComponents(
+      new ActionRowBuilder().addComponents(subject),
+      new ActionRowBuilder().addComponents(reason),
+    );
+}
+
+function createCloseTicketModal(meta) {
+  const reason = new TextInputBuilder()
+    .setCustomId('close_reason')
+    .setLabel('Reason for closing')
+    .setPlaceholder('Resolved, no longer needed, duplicate, etc.')
+    .setStyle(TextInputStyle.Paragraph)
+    .setMinLength(2)
+    .setMaxLength(500)
+    .setRequired(true);
+
+  return new ModalBuilder()
+    .setCustomId(IDS.ticketCloseModal)
+    .setTitle(`Close Ticket #${padTicketNumber(meta.number)}`)
+    .addComponents(new ActionRowBuilder().addComponents(reason));
+}
+
+function createTicketUserModal(mode, meta) {
+  const user = new TextInputBuilder()
+    .setCustomId('user')
+    .setLabel(mode === 'add' ? 'User to add' : 'User to remove')
+    .setPlaceholder('Paste a Discord user ID or mention')
+    .setStyle(TextInputStyle.Short)
+    .setMinLength(5)
+    .setMaxLength(50)
+    .setRequired(true);
+
+  return new ModalBuilder()
+    .setCustomId(mode === 'add' ? IDS.ticketAddUserModal : IDS.ticketRemoveUserModal)
+    .setTitle(`${mode === 'add' ? 'Add User' : 'Remove User'} • #${padTicketNumber(meta.number)}`)
+    .addComponents(new ActionRowBuilder().addComponents(user));
+}
+
+function extractDiscordId(value) {
+  const match = String(value ?? '').match(/\d{15,22}/);
+  return match?.[0] ?? null;
+}
+
+async function allocateTicketNumber(ownerId, type, subject, reason) {
+  if (database) {
+    const result = await database.query(
+      `INSERT INTO paradise_tickets (owner_id, ticket_type, subject, reason)
+       VALUES ($1, $2, $3, $4)
+       RETURNING ticket_number`,
+      [ownerId, type, subject, reason],
+    );
+    return Number(result.rows[0].ticket_number);
+  }
+
+  // Database-free fallback. PostgreSQL is still recommended because it keeps
+  // ticket numbering/history permanent across deleted channels and restarts.
+  return Number(String(Date.now()).slice(-6));
+}
+
+async function updateTicketDatabase(meta, values = {}) {
+  if (!database || !meta?.number) return;
+
+  const assignments = [];
+  const params = [];
+  let index = 1;
+
+  for (const [key, value] of Object.entries(values)) {
+    const allowed = new Set([
+      'channel_id',
+      'ticket_type',
+      'claimed_by',
+      'status',
+      'closed_at',
+      'closed_by',
+      'close_reason',
+    ]);
+    if (!allowed.has(key)) continue;
+    assignments.push(`${key} = $${index++}`);
+    params.push(value);
+  }
+
+  if (!assignments.length) return;
+  params.push(meta.number);
+
+  await database.query(
+    `UPDATE paradise_tickets SET ${assignments.join(', ')}
+     WHERE ticket_number = $${index}`,
+    params,
+  ).catch(error => console.error('[tickets] Database update failed:', error));
+}
+
+async function findOpenTicketForUser(guild, userId) {
+  await guild.channels.fetch().catch(() => {});
+  return guild.channels.cache.find(channel => {
+    if (!isTicketChannel(channel)) return false;
+    const meta = parseTicketMeta(channel);
+    return meta?.ownerId === userId;
+  }) ?? null;
+}
+
+function ticketPermissionOverwrites(guild, ownerId, type) {
+  const config = TICKET_TYPES[type];
+  const allowMember = [
+    PermissionFlagsBits.ViewChannel,
+    PermissionFlagsBits.SendMessages,
+    PermissionFlagsBits.ReadMessageHistory,
+    PermissionFlagsBits.AttachFiles,
+    PermissionFlagsBits.EmbedLinks,
+  ];
+
+  const overwrites = [
+    {
+      id: guild.roles.everyone.id,
+      deny: [PermissionFlagsBits.ViewChannel],
+    },
+    {
+      id: ownerId,
+      allow: allowMember,
+    },
+  ];
+
+  if (guild.members.me) {
+    overwrites.push({
+      id: guild.members.me.id,
+      allow: [
+        ...allowMember,
+        PermissionFlagsBits.ManageChannels,
+        PermissionFlagsBits.ManageMessages,
+      ],
+    });
+  }
+
+  for (const roleId of config.accessRoleIds) {
+    overwrites.push({
+      id: roleId,
+      allow: allowMember,
+    });
+  }
+
+  return overwrites;
+}
+
+async function syncTicketStaffPermissions(channel, type) {
+  const active = new Set(TICKET_TYPES[type]?.accessRoleIds ?? []);
+  const all = [
+    CONFIG.staffTeamRoleId,
+    CONFIG.managementTeamRoleId,
+    CONFIG.ownershipTeamRoleId,
+  ];
+
+  for (const roleId of all) {
+    if (active.has(roleId)) {
+      await channel.permissionOverwrites.edit(roleId, {
+        ViewChannel: true,
+        SendMessages: true,
+        ReadMessageHistory: true,
+        AttachFiles: true,
+        EmbedLinks: true,
+      });
+    } else {
+      await channel.permissionOverwrites.edit(roleId, {
+        ViewChannel: false,
+      });
+    }
+  }
+}
+
+async function safeTicketLog(guild, body, extraFiles = []) {
+  try {
+    const channel = await guild.channels.fetch(CONFIG.staffLogsChannelId);
+    if (!channel?.isTextBased()) return;
+
+    await channel.send({
+      components: [
+        makeContainer({
+          title: 'Ticket Log',
+          body,
+        }),
+      ],
+      flags: MessageFlags.IsComponentsV2,
+      files: [footerAttachment(), ...extraFiles],
+      allowedMentions: { parse: [] },
+    });
+  } catch (error) {
+    console.error('[tickets] Failed to send ticket log:', error);
+  }
+}
+
+async function getTicketDetails(meta) {
+  if (!database || !meta?.number) {
+    return { subject: 'Support Request', reason: 'See the ticket conversation for details.' };
+  }
+
+  try {
+    const result = await database.query(
+      `SELECT subject, reason FROM paradise_tickets WHERE ticket_number = $1 LIMIT 1`,
+      [meta.number],
+    );
+    return result.rows[0] ?? { subject: 'Support Request', reason: 'See the ticket conversation for details.' };
+  } catch {
+    return { subject: 'Support Request', reason: 'See the ticket conversation for details.' };
+  }
+}
+
+async function refreshTicketPanel(channel, meta) {
+  const details = await getTicketDetails(meta);
+  const recent = await channel.messages.fetch({ limit: 25 }).catch(() => null);
+  const panel = recent?.find(message => {
+    try {
+      return (
+        message.author?.id === client.user?.id &&
+        JSON.stringify(message.components).includes(IDS.ticketClaim)
+      );
+    } catch {
+      return false;
+    }
+  });
+
+  if (!panel) return;
+
+  await panel.edit({
+    components: [ticketOpeningContainer(meta, details.subject, details.reason)],
+    allowedMentions: {
+      users: [meta.ownerId],
+      roles: [TICKET_TYPES[meta.type].pingRoleId],
+    },
+  }).catch(error => console.error('[tickets] Failed to refresh ticket panel:', error));
+}
+
+async function createParadiseTicket(interaction, type, subject, reason) {
+  const guild = interaction.guild;
+  if (!guild || !TICKET_TYPES[type]) return;
+
+  if (ticketCreationLocks.has(interaction.user.id)) {
+    await interaction.reply({
+      components: [
+        resultContainer(
+          'Ticket Already Processing',
+          'Your ticket is already being created. Please wait a moment.',
+          COLORS.warning,
+        ),
+      ],
+      flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+      files: [footerAttachment()],
+    });
+    return;
+  }
+
+  ticketCreationLocks.add(interaction.user.id);
+
+  try {
+    const existing = await findOpenTicketForUser(guild, interaction.user.id);
+    if (existing) {
+      await interaction.reply({
+        components: [
+          resultContainer(
+            'You Already Have an Open Ticket',
+            `You can only have one active Paradise support ticket at a time.\n\nYour current ticket is <#${existing.id}>.`,
+            COLORS.warning,
+          ),
+        ],
+        flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+        files: [footerAttachment()],
+      });
+      return;
+    }
+
+    await interaction.reply({
+      components: [
+        resultContainer(
+          'Creating Ticket',
+          'Paradise Operations is creating your support ticket...',
+        ),
+      ],
+      flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+      files: [footerAttachment()],
+    });
+
+    const number = await allocateTicketNumber(interaction.user.id, type, subject, reason);
+    const meta = {
+      number,
+      ownerId: interaction.user.id,
+      type,
+      claimedBy: null,
+    };
+
+    const channel = await guild.channels.create({
+      name: ticketChannelName(type, number, interaction.user.username),
+      type: ChannelType.GuildText,
+      parent: TICKET_TYPES[type].categoryId,
+      topic: buildTicketTopic(meta),
+      permissionOverwrites: ticketPermissionOverwrites(guild, interaction.user.id, type),
+      reason: `Paradise support ticket #${padTicketNumber(number)} opened by ${interaction.user.tag}`,
+    });
+
+    await updateTicketDatabase(meta, { channel_id: channel.id });
+
+    await channel.send({
+      components: [ticketOpeningContainer(meta, subject, reason)],
+      flags: MessageFlags.IsComponentsV2,
+      files: [footerAttachment()],
+      allowedMentions: {
+        users: [interaction.user.id],
+        roles: [TICKET_TYPES[type].pingRoleId],
+      },
+    });
+
+    await interaction.editReply({
+      components: [
+        resultContainer(
+          'Ticket Created',
+          `Your **${TICKET_TYPES[type].label}** ticket has been created successfully.\n\n<#${channel.id}>`,
+          COLORS.success,
+        ),
+      ],
+      allowedMentions: { parse: [] },
+    });
+
+    await safeTicketLog(
+      guild,
+      `**Action:** Ticket opened\n` +
+        `**Ticket:** #${padTicketNumber(number)}\n` +
+        `**Type:** ${TICKET_TYPES[type].label}\n` +
+        `**Opened by:** <@${interaction.user.id}> (\`${interaction.user.id}\`)\n` +
+        `**Channel:** <#${channel.id}>\n` +
+        `**Subject:** ${subject}`,
+    );
+  } catch (error) {
+    console.error('[tickets] Ticket creation failed:', error);
+
+    if (interaction.replied) {
+      await interaction.editReply({
+        components: [
+          resultContainer(
+            'Ticket Creation Failed',
+            'Paradise Operations could not create your ticket. Please try again or contact server management.',
+            COLORS.danger,
+          ),
+        ],
+        allowedMentions: { parse: [] },
+      }).catch(() => {});
+    }
+  } finally {
+    ticketCreationLocks.delete(interaction.user.id);
+  }
+}
+
+async function handleTicketClaim(interaction) {
+  const channel = interaction.channel;
+  const meta = parseTicketMeta(channel);
+  if (!meta) return;
+
+  if (!canAccessTicketAsStaff(interaction.member, meta.type)) {
+    await interaction.reply({
+      components: [resultContainer('Access Denied', 'Only authorized Paradise staff can claim this ticket.', COLORS.danger)],
+      flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+      files: [footerAttachment()],
+    });
+    return;
+  }
+
+  if (meta.claimedBy && meta.claimedBy !== interaction.user.id) {
+    await interaction.reply({
+      components: [
+        resultContainer(
+          'Ticket Already Claimed',
+          `This ticket is currently claimed by <@${meta.claimedBy}>.`,
+          COLORS.warning,
+        ),
+      ],
+      flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+      files: [footerAttachment()],
+    });
+    return;
+  }
+
+  meta.claimedBy = meta.claimedBy === interaction.user.id ? null : interaction.user.id;
+
+  await channel.setTopic(buildTicketTopic(meta));
+  await updateTicketDatabase(meta, { claimed_by: meta.claimedBy });
+  await refreshTicketPanel(channel, meta);
+
+  await interaction.reply({
+    components: [
+      resultContainer(
+        meta.claimedBy ? 'Ticket Claimed' : 'Ticket Unclaimed',
+        meta.claimedBy
+          ? `You are now assigned to ticket **#${padTicketNumber(meta.number)}**.`
+          : `Ticket **#${padTicketNumber(meta.number)}** is now unclaimed.`,
+        COLORS.success,
+      ),
+    ],
+    flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+    files: [footerAttachment()],
+  });
+
+  await safeTicketLog(
+    interaction.guild,
+    `**Action:** ${meta.claimedBy ? 'Ticket claimed' : 'Ticket unclaimed'}\n` +
+      `**Ticket:** #${padTicketNumber(meta.number)}\n` +
+      `**Staff:** <@${interaction.user.id}> (\`${interaction.user.id}\`)\n` +
+      `**Channel:** <#${channel.id}>`,
+  );
+}
+
+async function handleTicketStaffPanel(interaction) {
+  const meta = parseTicketMeta(interaction.channel);
+  if (!meta) return;
+
+  if (!canAccessTicketAsStaff(interaction.member, meta.type)) {
+    await interaction.reply({
+      components: [resultContainer('Access Denied', 'You do not have access to this ticket staff panel.', COLORS.danger)],
+      flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+      files: [footerAttachment()],
+    });
+    return;
+  }
+
+  await interaction.reply({
+    components: [ticketStaffPanelContainer(meta)],
+    flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+    files: [footerAttachment()],
+  });
+}
+
+async function moveTicketLevel(interaction, direction) {
+  const channel = interaction.channel;
+  const meta = parseTicketMeta(channel);
+  if (!meta) return;
+
+  if (!canAccessTicketAsStaff(interaction.member, meta.type)) {
+    await interaction.reply({
+      components: [resultContainer('Access Denied', 'You cannot move this ticket.', COLORS.danger)],
+      flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+      files: [footerAttachment()],
+    });
+    return;
+  }
+
+  const chain = ['general', 'management', 'ownership'];
+  const currentIndex = chain.indexOf(meta.type);
+  const newIndex = currentIndex + direction;
+
+  if (newIndex < 0 || newIndex >= chain.length) {
+    await interaction.reply({
+      components: [resultContainer('No Further Level', 'This ticket cannot be moved any further in that direction.', COLORS.warning)],
+      flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+      files: [footerAttachment()],
+    });
+    return;
+  }
+
+  const oldType = meta.type;
+  const newType = chain[newIndex];
+
+  // A ticket moving to a new staff level becomes unclaimed so the new team can
+  // take ownership of it cleanly.
+  meta.type = newType;
+  meta.claimedBy = null;
+
+  await channel.setParent(TICKET_TYPES[newType].categoryId, { lockPermissions: false });
+  await syncTicketStaffPermissions(channel, newType);
+  await channel.setName(ticketChannelName(newType, meta.number, interaction.user.username).replace(slug(interaction.user.username), `ticket`));
+  await channel.setTopic(buildTicketTopic(meta));
+  await updateTicketDatabase(meta, {
+    ticket_type: newType,
+    claimed_by: null,
+  });
+  await refreshTicketPanel(channel, meta);
+
+  await interaction.reply({
+    components: [
+      resultContainer(
+        direction > 0 ? 'Ticket Escalated' : 'Ticket De-escalated',
+        `Ticket **#${padTicketNumber(meta.number)}** moved from **${TICKET_TYPES[oldType].label}** to **${TICKET_TYPES[newType].label}**.`,
+        COLORS.success,
+      ),
+    ],
+    flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+    files: [footerAttachment()],
+  });
+
+  await channel.send({
+    components: [
+      resultContainer(
+        direction > 0 ? 'Support Level Updated' : 'Support Level Updated',
+        `This ticket has been moved to **${TICKET_TYPES[newType].label}** by <@${interaction.user.id}>.\n\n<@&${TICKET_TYPES[newType].pingRoleId}>`,
+      ),
+    ],
+    flags: MessageFlags.IsComponentsV2,
+    files: [footerAttachment()],
+    allowedMentions: {
+      users: [interaction.user.id],
+      roles: [TICKET_TYPES[newType].pingRoleId],
+    },
+  });
+
+  await safeTicketLog(
+    interaction.guild,
+    `**Action:** ${direction > 0 ? 'Escalated' : 'De-escalated'}\n` +
+      `**Ticket:** #${padTicketNumber(meta.number)}\n` +
+      `**From:** ${TICKET_TYPES[oldType].label}\n` +
+      `**To:** ${TICKET_TYPES[newType].label}\n` +
+      `**Staff:** <@${interaction.user.id}> (\`${interaction.user.id}\`)`,
+  );
+}
+
+async function handleTicketUserPermission(interaction, mode) {
+  const channel = interaction.channel;
+  const meta = parseTicketMeta(channel);
+  if (!meta) return;
+
+  if (!canAccessTicketAsStaff(interaction.member, meta.type)) {
+    await interaction.reply({
+      components: [resultContainer('Access Denied', 'Only authorized Paradise staff can change ticket access.', COLORS.danger)],
+      flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+      files: [footerAttachment()],
+    });
+    return;
+  }
+
+  const userId = extractDiscordId(interaction.fields.getTextInputValue('user'));
+  if (!userId) {
+    await interaction.reply({
+      components: [resultContainer('Invalid User', 'Enter a valid Discord user ID or mention.', COLORS.warning)],
+      flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+      files: [footerAttachment()],
+    });
+    return;
+  }
+
+  if (mode === 'remove' && userId === meta.ownerId) {
+    await interaction.reply({
+      components: [resultContainer('Cannot Remove Ticket Owner', 'The ticket creator cannot be removed from their own ticket.', COLORS.warning)],
+      flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+      files: [footerAttachment()],
+    });
+    return;
+  }
+
+  const target = await interaction.guild.members.fetch(userId).catch(() => null);
+  if (!target) {
+    await interaction.reply({
+      components: [resultContainer('User Not Found', 'That user is not currently in Paradise Roleplay.', COLORS.warning)],
+      flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+      files: [footerAttachment()],
+    });
+    return;
+  }
+
+  if (mode === 'add') {
+    await channel.permissionOverwrites.edit(userId, {
+      ViewChannel: true,
+      SendMessages: true,
+      ReadMessageHistory: true,
+      AttachFiles: true,
+      EmbedLinks: true,
+    });
+  } else {
+    await channel.permissionOverwrites.delete(userId);
+  }
+
+  await interaction.reply({
+    components: [
+      resultContainer(
+        mode === 'add' ? 'User Added' : 'User Removed',
+        `<@${userId}> has been ${mode === 'add' ? 'added to' : 'removed from'} ticket **#${padTicketNumber(meta.number)}**.`,
+        COLORS.success,
+      ),
+    ],
+    flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+    files: [footerAttachment()],
+  });
+
+  await safeTicketLog(
+    interaction.guild,
+    `**Action:** User ${mode === 'add' ? 'added to' : 'removed from'} ticket\n` +
+      `**Ticket:** #${padTicketNumber(meta.number)}\n` +
+      `**User:** <@${userId}> (\`${userId}\`)\n` +
+      `**Staff:** <@${interaction.user.id}> (\`${interaction.user.id}\`)`,
+  );
+}
+
+async function createTextTranscript(channel, meta) {
+  const messages = [];
+  let before;
+
+  for (let page = 0; page < 10; page += 1) {
+    const batch = await channel.messages.fetch({
+      limit: 100,
+      ...(before ? { before } : {}),
+    }).catch(() => null);
+
+    if (!batch?.size) break;
+
+    messages.push(...batch.values());
+    before = batch.last().id;
+
+    if (batch.size < 100) break;
+  }
+
+  messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+
+  const lines = [
+    `Paradise Roleplay Ticket Transcript`,
+    `Ticket: #${padTicketNumber(meta.number)}`,
+    `Channel: #${channel.name} (${channel.id})`,
+    `Owner: ${meta.ownerId}`,
+    `Type: ${meta.type}`,
+    `Generated: ${new Date().toISOString()}`,
+    ``,
+    `------------------------------------------------------------`,
+    ``,
+  ];
+
+  for (const message of messages) {
+    const timestamp = new Date(message.createdTimestamp).toISOString();
+    const author = `${message.author?.tag ?? 'Unknown'} (${message.author?.id ?? 'unknown'})`;
+    const content = message.content?.trim() || '[No text content / component message]';
+
+    lines.push(`[${timestamp}] ${author}`);
+    lines.push(content);
+
+    for (const attachment of message.attachments.values()) {
+      lines.push(`[Attachment] ${attachment.url}`);
+    }
+
+    lines.push('');
+  }
+
+  return new AttachmentBuilder(
+    Buffer.from(lines.join('\n'), 'utf8'),
+    { name: `paradise-ticket-${padTicketNumber(meta.number)}.txt` },
+  );
+}
+
+async function closeParadiseTicket(interaction, reason) {
+  const channel = interaction.channel;
+  const meta = parseTicketMeta(channel);
+  if (!meta) return;
+
+  const isOwner = meta.ownerId === interaction.user.id;
+  const isStaff = canAccessTicketAsStaff(interaction.member, meta.type);
+
+  if (!isOwner && !isStaff) {
+    await interaction.reply({
+      components: [resultContainer('Access Denied', 'You cannot close this ticket.', COLORS.danger)],
+      flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+      files: [footerAttachment()],
+    });
+    return;
+  }
+
+  await interaction.reply({
+    components: [
+      resultContainer(
+        'Closing Ticket',
+        `Ticket **#${padTicketNumber(meta.number)}** is being closed and archived.`,
+        COLORS.warning,
+      ),
+    ],
+    flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+    files: [footerAttachment()],
+  });
+
+  const transcript = await createTextTranscript(channel, meta).catch(error => {
+    console.error('[tickets] Transcript creation failed:', error);
+    return null;
+  });
+
+  await updateTicketDatabase(meta, {
+    status: 'closed',
+    closed_at: new Date(),
+    closed_by: interaction.user.id,
+    close_reason: reason,
+  });
+
+  await safeTicketLog(
+    interaction.guild,
+    `**Action:** Ticket closed\n` +
+      `**Ticket:** #${padTicketNumber(meta.number)}\n` +
+      `**Type:** ${TICKET_TYPES[meta.type]?.label ?? meta.type}\n` +
+      `**Owner:** <@${meta.ownerId}> (\`${meta.ownerId}\`)\n` +
+      `**Closed by:** <@${interaction.user.id}> (\`${interaction.user.id}\`)\n` +
+      `**Reason:** ${reason}`,
+    transcript ? [transcript] : [],
+  );
+
+  const owner = await interaction.guild.members.fetch(meta.ownerId).catch(() => null);
+  if (owner) {
+    await owner.send({
+      components: [
+        resultContainer(
+          `Paradise Support Ticket #${padTicketNumber(meta.number)} Closed`,
+          `Your Paradise Roleplay support ticket has been closed.\n\n**Reason:** ${reason}`,
+        ),
+      ],
+      flags: MessageFlags.IsComponentsV2,
+      files: [footerAttachment()],
+    }).catch(() => {});
+  }
+
+  await channel.send({
+    components: [
+      resultContainer(
+        'Ticket Closed',
+        `This ticket was closed by <@${interaction.user.id}>.\n\n**Reason:** ${reason}\n\n-# This channel will be deleted in 5 seconds.`,
+        COLORS.warning,
+      ),
+    ],
+    flags: MessageFlags.IsComponentsV2,
+    files: [footerAttachment()],
+    allowedMentions: { users: [interaction.user.id] },
+  }).catch(() => {});
+
+  setTimeout(() => {
+    channel.delete(`Paradise ticket #${padTicketNumber(meta.number)} closed: ${reason}`).catch(error => {
+      console.error('[tickets] Failed to delete closed ticket:', error);
+    });
+  }, 5_000);
+}
+
+function messageContainsSupportPanel(message) {
+  try {
+    return (
+      message.author?.id === client.user?.id &&
+      JSON.stringify(message.components).includes(IDS.ticketGeneral)
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function ensureSupportPanel() {
+  const channel = await client.channels.fetch(CONFIG.supportChannelId);
+
+  if (!channel?.isTextBased()) {
+    throw new Error('Support channel is missing or is not a text channel.');
+  }
+
+  const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+  const existing = recent?.find(messageContainsSupportPanel);
+
+  const payload = {
+    components: [supportPanel()],
+    flags: MessageFlags.IsComponentsV2,
+    files: [footerAttachment()],
+    allowedMentions: { parse: [] },
+  };
+
+  if (existing) {
+    await existing.edit({
+      components: [supportPanel()],
+      attachments: [],
+      files: [footerAttachment()],
+      allowedMentions: { parse: [] },
+    }).catch(async () => {
+      await channel.send(payload);
+    });
+    return;
+  }
+
+  await channel.send(payload);
+}
+
+async function handleTicketButton(interaction) {
+  const type = ticketTypeFromPanelButton(interaction.customId);
+  if (type) {
+    await interaction.showModal(createTicketModal(type));
+    return true;
+  }
+
+  if (interaction.customId === IDS.ticketClaim && isTicketChannel(interaction.channel)) {
+    await handleTicketClaim(interaction);
+    return true;
+  }
+
+  if (interaction.customId === IDS.ticketClose && isTicketChannel(interaction.channel)) {
+    const meta = parseTicketMeta(interaction.channel);
+    const canClose =
+      meta?.ownerId === interaction.user.id ||
+      canAccessTicketAsStaff(interaction.member, meta?.type);
+
+    if (!canClose) {
+      await interaction.reply({
+        components: [resultContainer('Access Denied', 'You cannot close this ticket.', COLORS.danger)],
+        flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+        files: [footerAttachment()],
+      });
+      return true;
+    }
+
+    await interaction.showModal(createCloseTicketModal(meta));
+    return true;
+  }
+
+  if (interaction.customId === IDS.ticketStaffPanel && isTicketChannel(interaction.channel)) {
+    await handleTicketStaffPanel(interaction);
+    return true;
+  }
+
+  if (interaction.customId === IDS.ticketEscalate && isTicketChannel(interaction.channel)) {
+    await moveTicketLevel(interaction, 1);
+    return true;
+  }
+
+  if (interaction.customId === IDS.ticketDeescalate && isTicketChannel(interaction.channel)) {
+    await moveTicketLevel(interaction, -1);
+    return true;
+  }
+
+  if (interaction.customId === IDS.ticketAddUser && isTicketChannel(interaction.channel)) {
+    const meta = parseTicketMeta(interaction.channel);
+    if (!canAccessTicketAsStaff(interaction.member, meta.type)) {
+      await interaction.reply({
+        components: [resultContainer('Access Denied', 'Only authorized staff can add users.', COLORS.danger)],
+        flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+        files: [footerAttachment()],
+      });
+      return true;
+    }
+    await interaction.showModal(createTicketUserModal('add', meta));
+    return true;
+  }
+
+  if (interaction.customId === IDS.ticketRemoveUser && isTicketChannel(interaction.channel)) {
+    const meta = parseTicketMeta(interaction.channel);
+    if (!canAccessTicketAsStaff(interaction.member, meta.type)) {
+      await interaction.reply({
+        components: [resultContainer('Access Denied', 'Only authorized staff can remove users.', COLORS.danger)],
+        flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+        files: [footerAttachment()],
+      });
+      return true;
+    }
+    await interaction.showModal(createTicketUserModal('remove', meta));
+    return true;
+  }
+
+  return false;
+}
+
+async function handleTicketModal(interaction) {
+  if (interaction.customId.startsWith(IDS.ticketCreatePrefix)) {
+    const type = interaction.customId.slice(IDS.ticketCreatePrefix.length);
+    const subject = interaction.fields.getTextInputValue('subject').trim();
+    const reason = interaction.fields.getTextInputValue('reason').trim();
+    await createParadiseTicket(interaction, type, subject, reason);
+    return true;
+  }
+
+  if (interaction.customId === IDS.ticketCloseModal && isTicketChannel(interaction.channel)) {
+    const reason = interaction.fields.getTextInputValue('close_reason').trim();
+    await closeParadiseTicket(interaction, reason);
+    return true;
+  }
+
+  if (interaction.customId === IDS.ticketAddUserModal && isTicketChannel(interaction.channel)) {
+    await handleTicketUserPermission(interaction, 'add');
+    return true;
+  }
+
+  if (interaction.customId === IDS.ticketRemoveUserModal && isTicketChannel(interaction.channel)) {
+    await handleTicketUserPermission(interaction, 'remove');
+    return true;
+  }
+
+  return false;
+}
+
+
 function messageContainsVerificationPanel(message) {
   try {
     return (
@@ -928,30 +2069,64 @@ client.once(Events.ClientReady, async readyClient => {
   } catch (error) {
     console.error('[ready] Could not create verification panel:', error);
   }
+
+  try {
+    await ensureSupportPanel();
+    console.log('[ready] Support panel is ready.');
+  } catch (error) {
+    console.error('[ready] Could not create support panel:', error);
+  }
 });
 
 client.on(Events.InteractionCreate, async interaction => {
-  if (!interaction.isButton() || !interaction.guildId) return;
+  if (!interaction.guildId) return;
 
-  if (interaction.customId === IDS.verify) {
-    await beginVerification(interaction, false);
-    return;
-  }
+  try {
+    if (interaction.isModalSubmit()) {
+      if (await handleTicketModal(interaction)) return;
+      return;
+    }
 
-  if (interaction.customId === IDS.check) {
-    await checkVerification(interaction, false);
-    return;
-  }
+    if (!interaction.isButton()) return;
 
-  if (interaction.customId === IDS.reverify) {
-    await checkVerification(interaction, true);
-    return;
-  }
+    if (await handleTicketButton(interaction)) return;
 
-  if (interaction.customId.startsWith(IDS.completePrefix)) {
-    const sid = interaction.customId.slice(IDS.completePrefix.length);
-    if (!sid) return;
-    await completeVerificationSession(interaction, sid);
+    if (interaction.customId === IDS.verify) {
+      await beginVerification(interaction, false);
+      return;
+    }
+
+    if (interaction.customId === IDS.check) {
+      await checkVerification(interaction, false);
+      return;
+    }
+
+    if (interaction.customId === IDS.reverify) {
+      await checkVerification(interaction, true);
+      return;
+    }
+
+    if (interaction.customId.startsWith(IDS.completePrefix)) {
+      const sid = interaction.customId.slice(IDS.completePrefix.length);
+      if (!sid) return;
+      await completeVerificationSession(interaction, sid);
+    }
+  } catch (error) {
+    console.error('[interaction] Unhandled interaction error:', error);
+
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({
+        components: [
+          resultContainer(
+            'Paradise Operations Error',
+            'Something went wrong while processing that action. Please try again.',
+            COLORS.danger,
+          ),
+        ],
+        flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+        files: [footerAttachment()],
+      }).catch(() => {});
+    }
   }
 });
 
