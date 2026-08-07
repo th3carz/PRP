@@ -1,7 +1,7 @@
 {
   "name": "paradise-operations",
-  "version": "0.2.0",
-  "description": "Paradise Roleplay Operations Bot - Verification and Support/Ticket System",
+  "version": "0.3.1",
+  "description": "Paradise Roleplay Operations Bot - Verification and Guided Support with Assistance Banner",
   "type": "module",
   "main": "main.js",
   "scripts": {
