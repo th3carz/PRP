@@ -242,7 +242,7 @@ function verificationPanel(guildId) {
     body:
       '**Verify your Roblox account to access Paradise Roleplay.**\n\n' +
       'Paradise Operations uses **Dock** to securely connect your Discord account to Roblox. ' +
-      'After verification, your server nickname will automatically become your Roblox username in the format `@username` and you will receive the Community Member role.',
+      'After verification, your server nickname will automatically become your Roblox username in the format `username` and you will receive the Community Member role.',
     buttons: [
       new ButtonBuilder()
         .setCustomId(IDS.verify)
@@ -266,6 +266,30 @@ function verificationPanel(guildId) {
 
 function resultContainer(title, body, accent = COLORS.neutral, buttons = []) {
   return makeContainer({ title, body, accent, buttons });
+}
+
+async function startEphemeralV2(interaction, title = 'Paradise Operations', body = 'Please wait a moment...') {
+  await interaction.reply({
+    components: [
+      resultContainer(
+        title,
+        body,
+        COLORS.neutral,
+      ),
+    ],
+    flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
+    files: [footerAttachment()],
+    allowedMentions: { parse: [] },
+  });
+}
+
+async function editEphemeralV2(interaction, container) {
+  // The original V2 reply already contains the footer attachment.
+  // Keeping the attachment avoids re-uploading it on every edit.
+  await interaction.editReply({
+    components: [container],
+    allowedMentions: { parse: [] },
+  });
 }
 
 async function dockRequest(path, options = {}) {
@@ -486,7 +510,7 @@ async function finalizeVerification(interaction, robloxId, method = 'Dock') {
     roleAdded = true;
   }
 
-  const desiredNickname = `@${profile.username}`;
+  const desiredNickname = profile.username;
   if (member.nickname !== desiredNickname) {
     try {
       await member.setNickname(
@@ -530,7 +554,7 @@ async function finalizeVerification(interaction, robloxId, method = 'Dock') {
       `**Account age:** ${ageDays === null ? 'Unknown' : `${ageDays} days`}\n` +
       `**Method:** ${method}\n` +
       `**Community Member:** ${roleAdded ? 'Added' : 'Already present'}\n` +
-      `**Nickname:** ${nicknameError ? 'Could not update (role hierarchy/permission)' : nicknameUpdated ? `Updated to @${profile.username}` : 'Already correct'}`,
+      `**Nickname:** ${nicknameError ? 'Could not update (role hierarchy/permission)' : nicknameUpdated ? `Updated to ${profile.username}` : 'Already correct'}`,
     nicknameError ? COLORS.warning : COLORS.success,
   );
 
@@ -546,7 +570,7 @@ async function finalizeVerification(interaction, robloxId, method = 'Dock') {
         `**Roblox:** @${profile.username}\n` +
         `**Display name:** ${profile.displayName}\n` +
         `**Roblox ID:** \`${profile.id}\`\n` +
-        `**Nickname:** \`@${profile.username}\`\n` +
+        `**Nickname:** \`${profile.username}\`\n` +
         `**Role:** <@&${CONFIG.communityMemberRoleId}>` +
         nicknameNote,
       nicknameError ? COLORS.warning : COLORS.success,
@@ -555,9 +579,11 @@ async function finalizeVerification(interaction, robloxId, method = 'Dock') {
 }
 
 async function beginVerification(interaction, forceSession = false) {
-  await interaction.deferReply({
-    flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
-  });
+  await startEphemeralV2(
+    interaction,
+    'Checking Verification',
+    'Paradise Operations is checking your Roblox verification status...',
+  );
 
   try {
     if (!forceSession) {
@@ -570,7 +596,7 @@ async function beginVerification(interaction, forceSession = false) {
           'Dock existing link',
         );
 
-        await interaction.editReply({ components: [result.container], files: [footerAttachment()] });
+        await editEphemeralV2(interaction, result.container);
         return;
       }
     }
@@ -594,7 +620,7 @@ async function beginVerification(interaction, forceSession = false) {
       `1. Press **Open Dock Verification** below.\n` +
         `2. Complete the Roblox verification on Dock.\n` +
         `3. Return to Discord and press **Complete Verification**.\n\n` +
-        `Paradise Operations will then confirm the link directly with Dock, add your Community Member role, and set your nickname to \`@username\`.` +
+        `Paradise Operations will then confirm the link directly with Dock, add your Community Member role, and set your nickname to \`username\`.` +
         expiry,
       COLORS.paradiseFall,
       [
@@ -613,16 +639,20 @@ async function beginVerification(interaction, forceSession = false) {
       ],
     );
 
-    await interaction.editReply({ components: [container], files: [footerAttachment()] });
+    await editEphemeralV2(interaction, container);
   } catch (error) {
     await handleVerificationError(interaction, error);
   }
 }
 
 async function checkVerification(interaction, sync = false) {
-  await interaction.deferReply({
-    flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
-  });
+  await startEphemeralV2(
+    interaction,
+    sync ? 'Reverifying Account' : 'Checking Verification',
+    sync
+      ? 'Paradise Operations is resyncing your Roblox account, role, and nickname...'
+      : 'Paradise Operations is checking your Roblox verification status...',
+  );
 
   try {
     const robloxId = await lookupDockLink(interaction.user.id, interaction.guildId);
@@ -646,17 +676,15 @@ async function checkVerification(interaction, sync = false) {
           .setURL(supportUrl(interaction.guildId)),
       );
 
-      await interaction.editReply({
-        components: [
-          resultContainer(
-            'Not Verified Yet',
-            `Dock does not currently have a Roblox account linked to your Discord account for Paradise Roleplay.`,
-            COLORS.warning,
-            buttons,
-          ),
-        ],
-        files: [footerAttachment()],
-      });
+      await editEphemeralV2(
+        interaction,
+        resultContainer(
+          'Not Verified Yet',
+          `Dock does not currently have a Roblox account linked to your Discord account for Paradise Roleplay.`,
+          COLORS.warning,
+          buttons,
+        ),
+      );
       return;
     }
 
@@ -666,64 +694,62 @@ async function checkVerification(interaction, sync = false) {
         robloxId,
         'Dock reverify',
       );
-      await interaction.editReply({ components: [result.container], files: [footerAttachment()] });
+      await editEphemeralV2(interaction, result.container);
       return;
     }
 
     const profile = await fetchRobloxUser(robloxId);
     const ageDays = accountAgeDays(profile.created);
 
-    await interaction.editReply({
-      components: [
-        resultContainer(
-          'Verification Status',
-          `**Status:** Verified with Dock\n` +
-            `**Roblox:** @${profile.username}\n` +
-            `**Display name:** ${profile.displayName}\n` +
-            `**Roblox ID:** \`${profile.id}\`\n` +
-            `**Account age:** ${ageDays === null ? 'Unknown' : `${ageDays} days`}\n\n` +
-            `Use **Reverify** on the main panel if your Roblox link changed or your nickname/role needs to be resynced.`,
-          COLORS.success,
-        ),
-      ],
-      files: [footerAttachment()],
-    });
+    await editEphemeralV2(
+      interaction,
+      resultContainer(
+        'Verification Status',
+        `**Status:** Verified with Dock\n` +
+          `**Roblox:** @${profile.username}\n` +
+          `**Display name:** ${profile.displayName}\n` +
+          `**Roblox ID:** \`${profile.id}\`\n` +
+          `**Account age:** ${ageDays === null ? 'Unknown' : `${ageDays} days`}\n\n` +
+          `Use **Reverify** on the main panel if your Roblox link changed or your nickname/role needs to be resynced.`,
+        COLORS.success,
+      ),
+    );
   } catch (error) {
     await handleVerificationError(interaction, error);
   }
 }
 
 async function completeVerificationSession(interaction, sid) {
-  await interaction.deferReply({
-    flags: MessageFlags.Ephemeral | MessageFlags.IsComponentsV2,
-  });
+  await startEphemeralV2(
+    interaction,
+    'Completing Verification',
+    'Paradise Operations is checking your completed Dock verification session...',
+  );
 
   try {
     const sessionPayload = await getDockVerificationSession(sid);
     const result = sessionPayload?.data?.result ?? null;
 
     if (!result) {
-      await interaction.editReply({
-        components: [
-          resultContainer(
-            'Verification Still Pending',
-            `Dock has not completed this verification session yet.\n\n` +
-              `Finish the verification in Dock, then press **Complete Verification** again.`,
-            COLORS.warning,
-            [
-              new ButtonBuilder()
-                .setCustomId(`${IDS.completePrefix}${sid}`)
-                .setLabel('Check Again')
-                .setStyle(ButtonStyle.Secondary),
-              new ButtonBuilder()
-                .setLabel('Support')
-                .setStyle(ButtonStyle.Link)
-                .setURL(supportUrl(interaction.guildId)),
-            ],
-          ),
-        ],
-        files: [footerAttachment()],
-      });
+      await editEphemeralV2(
+        interaction,
+        resultContainer(
+          'Verification Still Pending',
+          `Dock has not completed this verification session yet.\n\n` +
+            `Finish the verification in Dock, then press **Complete Verification** again.`,
+          COLORS.warning,
+          [
+            new ButtonBuilder()
+              .setCustomId(`${IDS.completePrefix}${sid}`)
+              .setLabel('Check Again')
+              .setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder()
+              .setLabel('Support')
+              .setStyle(ButtonStyle.Link)
+              .setURL(supportUrl(interaction.guildId)),
+          ],
+        ),
+      );
       return;
     }
 
@@ -747,10 +773,7 @@ async function completeVerificationSession(interaction, sid) {
       'Dock verification session',
     );
 
-    await interaction.editReply({
-      components: [verification.container],
-      files: [footerAttachment()],
-    });
+    await editEphemeralV2(interaction, verification.container);
   } catch (error) {
     await handleVerificationError(interaction, error);
   }
@@ -794,7 +817,7 @@ async function handleVerificationError(interaction, error) {
 
   try {
     if (interaction.deferred || interaction.replied) {
-      await interaction.editReply({ components: [container], files: [footerAttachment()] });
+      await editEphemeralV2(interaction, container);
     } else {
       await interaction.reply({
         components: [container],
