@@ -1,0 +1,17 @@
+{
+  "name": "paradise-operations",
+  "version": "0.1.0",
+  "description": "Paradise Roleplay Operations Bot",
+  "type": "module",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js"
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "dependencies": {
+    "discord.js": "^14.27.0",
+    "pg": "^8.22.0"
+  }
+}
