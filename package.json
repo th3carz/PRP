@@ -1,7 +1,7 @@
 {
   "name": "paradise-operations",
-  "version": "0.4.2",
-  "description": "Paradise Roleplay Operations Bot - Expanded Dashboard, Verification, and Guided Support",
+  "version": "0.4.3",
+  "description": "Paradise Roleplay Operations Bot - Expanded Dashboard duplicate ID fix",
   "type": "module",
   "main": "main.js",
   "scripts": {
