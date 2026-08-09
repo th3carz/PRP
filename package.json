@@ -1,7 +1,7 @@
 {
   "name": "paradise-operations",
-  "version": "0.4.5",
-  "description": "Paradise Roleplay Operations Bot - Dashboard with button-only FAQ access",
+  "version": "0.5.0",
+  "description": "Paradise Roleplay Operations Bot - Verification, Support, Dashboard, Staff Feedback, Suggestions, Giveaways, and Supporters",
   "type": "module",
   "main": "main.js",
   "scripts": {
