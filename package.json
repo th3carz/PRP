@@ -1,7 +1,7 @@
 {
   "name": "paradise-operations",
-  "version": "0.5.0",
-  "description": "Paradise Roleplay Operations Bot - Verification, Support, Dashboard, Staff Feedback, Suggestions, Giveaways, and Supporters",
+  "version": "0.5.1",
+  "description": "Paradise Roleplay Operations Bot - Dedicated channels for feedback, suggestions, supporters, and giveaways",
   "type": "module",
   "main": "main.js",
   "scripts": {
