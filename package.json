@@ -1,7 +1,7 @@
 {
   "name": "paradise-operations",
-  "version": "0.8.1",
-  "description": "Paradise Roleplay Operations Bot - separated Marketplace panel/advertisement channels and advertisement management commands",
+  "version": "0.8.2",
+  "description": "Paradise Roleplay Operations Bot - Discord command registration fix and Open Cloud permission backoff",
   "type": "module",
   "main": "main.js",
   "scripts": {
