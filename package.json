@@ -1,7 +1,7 @@
 {
   "name": "paradise-operations",
-  "version": "0.7.0",
-  "description": "Paradise Roleplay Operations Bot - Session startup/boost/full/end system and live server-status channel",
+  "version": "0.7.1",
+  "description": "Paradise Roleplay Operations Bot - permanent live session/server panel and Quick Join",
   "type": "module",
   "main": "main.js",
   "scripts": {
