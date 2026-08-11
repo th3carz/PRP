@@ -1,7 +1,7 @@
 {
   "name": "paradise-operations",
-  "version": "0.7.1",
-  "description": "Paradise Roleplay Operations Bot - permanent live session/server panel and Quick Join",
+  "version": "0.8.0",
+  "description": "Paradise Roleplay Operations Bot - full Roblox Marketplace, purchase claims, paid ad review and 72-hour queue",
   "type": "module",
   "main": "main.js",
   "scripts": {
