@@ -1,7 +1,7 @@
 {
   "name": "paradise-operations",
-  "version": "0.5.1",
-  "description": "Paradise Roleplay Operations Bot - Dedicated channels for feedback, suggestions, supporters, and giveaways",
+  "version": "0.7.0",
+  "description": "Paradise Roleplay Operations Bot - Session startup/boost/full/end system and live server-status channel",
   "type": "module",
   "main": "main.js",
   "scripts": {
