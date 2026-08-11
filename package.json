@@ -1,7 +1,7 @@
 {
   "name": "paradise-operations",
-  "version": "0.8.0",
-  "description": "Paradise Roleplay Operations Bot - full Roblox Marketplace, purchase claims, paid ad review and 72-hour queue",
+  "version": "0.8.1",
+  "description": "Paradise Roleplay Operations Bot - separated Marketplace panel/advertisement channels and advertisement management commands",
   "type": "module",
   "main": "main.js",
   "scripts": {
