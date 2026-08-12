@@ -1,7 +1,7 @@
 {
   "name": "paradise-operations",
-  "version": "0.8.2",
-  "description": "Paradise Roleplay Operations Bot - Discord command registration fix and Open Cloud permission backoff",
+  "version": "0.8.3",
+  "description": "Paradise Roleplay Operations Bot - welcome system, portal links, and Components V2 advertisement ping fix",
   "type": "module",
   "main": "main.js",
   "scripts": {
