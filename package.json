@@ -1,7 +1,7 @@
 {
   "name": "paradise-operations",
-  "version": "0.8.4",
-  "description": "Paradise Roleplay Operations Bot - persistent ticket transcript archive and website transcript links",
+  "version": "0.8.5",
+  "description": "Paradise Roleplay Operations Bot - official ERLC Quick Join, dynamic server code, Watchdog monitoring, and in-game voice scene commands",
   "type": "module",
   "main": "main.js",
   "scripts": {
