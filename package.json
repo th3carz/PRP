@@ -1,7 +1,7 @@
 {
   "name": "paradise-operations",
-  "version": "0.9.0",
-  "description": "Paradise Roleplay Operations Bot - moderation cases, universal player records, notes, BOLOs, and Watchdog-linked player intelligence",
+  "version": "0.8.6",
+  "description": "Paradise Roleplay Operations Bot - staff dashboard, applications bridge, promotions, and infractions",
   "type": "module",
   "main": "main.js",
   "scripts": {
