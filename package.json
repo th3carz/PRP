@@ -1,7 +1,7 @@
 {
   "name": "paradise-operations",
-  "version": "0.8.10",
-  "description": "Paradise Roleplay Operations Bot - ERLC Event Webhooks with custom Staff Waiting Room voice announcement",
+  "version": "0.8.12",
+  "description": "Paradise Roleplay Operations Bot - dashboard/verification banner refresh and new global footer banner",
   "type": "module",
   "main": "main.js",
   "scripts": {
