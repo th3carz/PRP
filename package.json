@@ -1,7 +1,7 @@
 {
   "name": "paradise-operations",
-  "version": "0.8.12",
-  "description": "Paradise Roleplay Operations Bot - dashboard/verification banner refresh and new global footer banner",
+  "version": "0.8.16",
+  "description": "Paradise Roleplay Operations Bot - marketplace banner updated with current Paradise branding",
   "type": "module",
   "main": "main.js",
   "scripts": {
